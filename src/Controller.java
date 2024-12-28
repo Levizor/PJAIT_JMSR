@@ -1,18 +1,19 @@
 import models.Bind;
 
+import javax.script.ScriptContext;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
+import javax.script.ScriptException;
 import java.io.*;
-import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.util.*;
+import java.util.function.Consumer;
+import java.util.function.DoubleConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -20,7 +21,9 @@ public class Controller {
     String name;
     Class modelClass;
     Object model;
-    Object[] LATA;
+    String[] LATA;
+    Map<String, Object> bindings = new HashMap<>();
+
 
     ScriptEngineManager sem;
 
@@ -37,32 +40,36 @@ public class Controller {
 
     public Controller readDataFromFile(String filename) throws FileNotFoundException{
         var map = parseFileToMap(filename);
-        LATA = map.get("LATA").stream().map(Double::intValue).toArray();
+        LATA =  map.get("LATA").stream().map(Double::intValue).map(Object::toString).toArray(String[]::new);
         fillModel(map);
         return this;
     }
 
    public Controller runModel() throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
         Method run = modelClass.getMethod("run");
-        System.out.println("invoking method");
         run.invoke(model, null);
         return this;
     }
 
-    public Controller runScriptFromFile(String filename){
-        for(var engine: sem.getEngineFactories()){
-            System.out.println(engine.getEngineName());
-        }
+    public Controller runScriptFromFile(String filename) throws IOException, ScriptException {
+        String extension = filename.split("\\.")[filename.split("\\.").length - 1];
+        ScriptEngine engine = sem.getEngineByExtension(extension);
+        String script = Files.readString(Paths.get(filename));
+
+        return runScriptFromString(script, engine);
+    }
+
+    public Controller runScriptFromString(String script, ScriptEngine engine) throws ScriptException {
+        fillScriptEngineWithVars(engine);
+        engine.eval(script);
+        fillVarsFromScripEngine(engine);
 
         return this;
     }
 
-    public Controller runScriptFromString(String script){
-        return this;
-    }
 
-    public String getResultsAsTsv(){
-        return "";
+    public String getLATA(){
+        return Arrays.stream(LATA).map(Object::toString).collect(Collectors.joining("\t"));
     }
 
     private HashMap<String, ArrayList<Double>> parseFileToMap(String filename) throws FileNotFoundException {
@@ -87,7 +94,7 @@ public class Controller {
 
     private void fillModel(HashMap<String, ArrayList<Double>> map){
         final int size = map.get("LATA").size();
-        Arrays.stream(modelClass.getDeclaredFields()).filter(field -> field.isAnnotationPresent(Bind.class)).forEach(
+        getBindedFields().forEach(
                 field -> {
                     field.setAccessible(true);
                     try {
@@ -103,6 +110,42 @@ public class Controller {
         );
     }
 
+    private Stream<Field> getBindedFields() {
+        return Arrays.stream(modelClass.getDeclaredFields()).filter(field -> field.isAnnotationPresent(Bind.class));
+    }
+
+    private void fillVarsFromScripEngine(ScriptEngine engine) throws ScriptException {
+        Map<String, Object> sbinds = engine.getBindings(ScriptContext.ENGINE_SCOPE);
+        getBindedFields().forEach(field -> {
+            if(sbinds.containsKey(field.getName())){
+                field.setAccessible(true);
+                try {
+                    field.set(model, sbinds.get(field.getName()));
+                } catch (IllegalAccessException e) {
+                    throw new RuntimeException(e);
+                }
+                sbinds.remove(field.getName());
+            }
+        });
+
+        sbinds.keySet().stream()
+                .filter(key -> !(key.length()==1 && Character.isLowerCase(key.charAt(0))))
+                .forEach(key -> bindings.put(key, sbinds.get(key)));
+
+    }
+
+
+    private void fillScriptEngineWithVars(ScriptEngine engine) {
+        getBindedFields().forEach(field -> {
+            field.setAccessible(true);
+            try {
+                engine.put(field.getName(), field.get(model));
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        bindings.keySet().forEach(key -> engine.put(key, bindings.get(key)));
+    }
     private double[] makeArray(ArrayList<Double> array, int size){
         double[] result = new double[size];
         int i = 0;
@@ -118,25 +161,87 @@ public class Controller {
         return result;
     }
 
+
+    public String getResultsAsTsv(){
+        StringBuilder result = new StringBuilder();
+        result.append("LATA\t").append(String.join("\t", getLATA()));
+        result.append("\n");
+
+        try{
+            getBindedFields().filter(field -> field.getType().isArray())
+                    .forEachOrdered(field -> {
+                        field.setAccessible(true);
+                        try {
+                            double[] val = (double[]) field.get(model);
+                            result.append(field.getName()).append("\t");
+                            result.append(Arrays.stream(val).mapToObj(String::valueOf).collect(Collectors.joining("\t")));
+                            result.append("\n");
+                        } catch (IllegalAccessException e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+        }catch(Exception e){}
+
+        if(!bindings.isEmpty()){
+            bindings.keySet().stream().forEach(key-> {
+                Object value = bindings.get(key);
+                if(value==null) return;
+                result.append(key).append("\t");
+                if(value.getClass().isArray()){
+                    result.append(Arrays.stream((double[]) value).mapToObj(String::valueOf).collect(Collectors.joining("\t")));
+                }else {
+                    result.append(value.toString());
+                }
+                result.append("\n");
+            });
+        }
+
+        return result.toString();
+    }
+
+    Consumer<Object> printTab = obj -> System.out.print(obj+"\t");
+    DoubleConsumer printTabDouble = obj -> System.out.print(obj+"\t");
+
     public void printFields() throws IllegalAccessException {
-        Arrays.stream(LATA).forEach(lat -> System.out.print(lat + " "));
+        System.out.print("LATA\t");
+        Arrays.stream(LATA).forEach(printTab);
         System.out.println();
-        for(Field field : modelClass.getDeclaredFields()){
+
+        getBindedFields().forEach(field -> {
             field.setAccessible(true);
-            if(field.getType().getName().equals("int")){
-                System.out.println(field.getName() + " : " + field.getInt(model));
-            }else{
-                System.out.println(field.getName() + " : " + Arrays.deepToString(new Object[]{field.get(model)}));
+            if(!field.getType().isArray()) return;
+
+            try {
+                double[] array = (double[]) field.get(model);
+                System.out.print(field.getName()+"\t");
+                Arrays.stream(array).forEach(printTabDouble);
+                System.out.println();
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
             }
+        });
+
+        if(!bindings.isEmpty()){
+            bindings.keySet().stream().forEach(key-> {
+                Object value = bindings.get(key);
+                if(value==null) return;
+                System.out.print(key+"\t");
+                if(value.getClass().isArray()){
+                    Arrays.stream((double[]) value).forEach(printTabDouble);
+                    System.out.println();
+                }else {
+                    System.out.print(value+"\t");
+                }
+            });
         }
     }
 
-    public static void main(String[] args) throws FileNotFoundException, InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchMethodException {
+    public static void main(String[] args) throws IOException, InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchMethodException, ScriptException {
         Controller controller = new Controller("Model1").readDataFromFile("data/data2.txt");
         controller.runModel();
-        controller.printFields();
-        controller.runScriptFromFile("data/data2.txt");
+        String s = controller.getResultsAsTsv();
+        System.out.println(Arrays.deepToString(s.split("\t")));
+//        controller.runScriptFromFile("scripts/script1.groovy");
+//        controller.printFields();
     }
-
-
 }

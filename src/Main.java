@@ -1,3 +1,6 @@
+import javax.script.ScriptEngine;
+import javax.script.ScriptEngineManager;
+import javax.script.ScriptException;
 import javax.swing.*;
 import java.awt.*;
 
@@ -21,7 +24,12 @@ public class Main extends JFrame {
     public void run(){
         setVisible(true);
     }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws ScriptException {
         new Main("Analyzer").run();
+//        ScriptEngine engine=new ScriptEngineManager().getEngineByName("groovy");
+//        engine.put("x", 1);
+//        engine.eval("x = x+2");
+//        int x = (int) engine.get("x");
+//        System.out.println(x);
     }
 }

@@ -1,0 +1,11 @@
+LATA    2020    2021    2022    2023    2024
+growthPrivateConsumption    1.54            1.06
+growthPublicConsumption     0.78            1.05
+growthInvestment            0.12
+growthExports               1.13
+growthImports               1.14            1.17
+privateConsumption      1023752.2
+publicConsumption       315397
+investment              348358
+exports                 811108.6
+imports                 784342.4
